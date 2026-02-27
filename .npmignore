@@ -1,0 +1,7 @@
+node_modules/
+.cxx/
+android/build/
+ios/build/
+example/
+.github/
+.vscode/

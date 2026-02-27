@@ -1,0 +1,12 @@
+// NitroTflite+autolinking.gradle
+// Ensures NitroModules prefab is available for CMake
+
+android {
+  buildFeatures {
+    prefab true
+  }
+}
+
+dependencies {
+  implementation project(":react-native-nitro-modules")
+}

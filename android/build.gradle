@@ -1,0 +1,256 @@
+import org.gradle.api.file.RelativePath
+
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+
+  dependencies {
+    classpath "com.android.tools.build:gradle:9.0.0"
+  }
+}
+
+def reactNativeArchitectures() {
+  def value = rootProject.getProperties().get("reactNativeArchitectures")
+  return value ? value.split(",") : ["armeabi-v7a", "x86", "x86_64", "arm64-v8a"]
+}
+
+def isNewArchitectureEnabled() {
+  return rootProject.hasProperty("newArchEnabled") && rootProject.getProperty("newArchEnabled") == "true"
+}
+
+apply plugin: "com.android.library"
+apply plugin: 'org.jetbrains.kotlin.android'
+apply from: '../nitrogen/generated/android/NitroTflite+autolinking.gradle'
+apply from: './fix-prefab.gradle'
+
+if (isNewArchitectureEnabled()) {
+  apply plugin: "com.facebook.react"
+}
+
+def getExtOrDefault(name) {
+  return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["NitroTflite_" + name]
+}
+
+def getExtOrIntegerDefault(name) {
+  return rootProject.ext.has(name) ? rootProject.ext.get(name) : (project.properties["NitroTflite_" + name]).toInteger()
+}
+
+android {
+  namespace "com.margelo.nitro.nitrotflite"
+
+  ndkVersion getExtOrDefault("ndkVersion")
+  compileSdkVersion getExtOrIntegerDefault("compileSdkVersion")
+
+  defaultConfig {
+    minSdkVersion getExtOrIntegerDefault("minSdkVersion")
+    targetSdkVersion getExtOrIntegerDefault("targetSdkVersion")
+    buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+
+    externalNativeBuild {
+      cmake {
+        cppFlags "-frtti -fexceptions -Wall -Wextra -fstack-protector-all"
+
+        // Find NitroModules location
+        def nitroModulesDir = file("$projectDir/../node_modules/react-native-nitro-modules")
+        if (!nitroModulesDir.exists()) {
+          nitroModulesDir = file("$projectDir/../../react-native-nitro-modules")
+        }
+
+        arguments "-DANDROID_STL=c++_shared",
+                  "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                  "-DNITRO_MODULES_BUILD_DIR=${nitroModulesDir}/android/build"
+        abiFilters (*reactNativeArchitectures())
+
+        buildTypes {
+          debug {
+            cppFlags "-O1 -g"
+          }
+          release {
+            cppFlags "-O2"
+          }
+        }
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "CMakeLists.txt"
+    }
+  }
+
+  packagingOptions {
+    excludes = [
+            "META-INF",
+            "META-INF/**",
+            "**/libc++_shared.so",
+            "**/libNitroModules.so",
+            "**/libfbjni.so",
+            "**/libjsi.so",
+            "**/libfolly_json.so",
+            "**/libfolly_runtime.so",
+            "**/libglog.so",
+            "**/libhermes.so",
+            "**/libhermes-executor-debug.so",
+            "**/libhermes_executor.so",
+            "**/libreactnative.so",
+            "**/libreactnativejni.so",
+            "**/libturbomodulejsijni.so",
+            "**/libreact_nativemodule_core.so",
+            "**/libjscexecutor.so",
+            "**/libtensorflowlite_jni.so",
+            "**/libtensorflowlite_gpu_jni.so",
+    ]
+  }
+
+  buildFeatures {
+    buildConfig true
+    prefab true
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+    }
+  }
+
+  lintOptions {
+    disable "GradleCompatible"
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_1_8
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
+
+  sourceSets {
+    main {
+      if (isNewArchitectureEnabled()) {
+        java.srcDirs += [
+          "${project.buildDir}/generated/source/codegen/java"
+        ]
+      }
+    }
+  }
+
+  configurations {
+    extractHeaders
+    extractSO
+  }
+}
+
+repositories {
+  mavenCentral()
+  google()
+}
+
+dependencies {
+  //noinspection GradleDynamicVersion
+  implementation "com.facebook.react:react-native:+"
+
+  // NitroModules dependency is handled by autolinking.gradle
+
+  // TensorFlow Lite
+  implementation "com.google.ai.edge.litert:litert:1.4.0"
+  extractSO("com.google.ai.edge.litert:litert:1.4.0")
+  extractHeaders("com.google.ai.edge.litert:litert:1.4.0")
+
+  // TensorFlow Lite GPU delegate
+  implementation "com.google.ai.edge.litert:litert-gpu:1.4.0"
+  extractSO("com.google.ai.edge.litert:litert-gpu:1.4.0")
+  extractHeaders("com.google.ai.edge.litert:litert-gpu:1.4.0")
+
+  // OkHttp for network requests
+  implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}
+
+task cleanEmptyDirectories(type: Delete) {
+  delete 'src/main/cpp/lib/headers'
+  delete 'src/main/cpp/lib/res'
+}
+
+task extractAARHeaders {
+  finalizedBy cleanEmptyDirectories
+  doLast {
+    configurations.extractHeaders.files.each { aarFile ->
+      def packageName = aarFile.name.tokenize('-')[0]
+      copy {
+        from zipTree(aarFile)
+        into "src/main/cpp/lib/"
+        include "**/*.h"
+        eachFile { fileCopyDetails ->
+          if (fileCopyDetails.name.endsWith(".h")) {
+            def originalRelativePath = fileCopyDetails.relativePath.toString()
+            if (originalRelativePath.startsWith("headers/external/org_tensorflow/tensorflow/")) {
+              def newRelativePath = packageName + "/headers/" + originalRelativePath.substring("headers/external/org_tensorflow/".length())
+              fileCopyDetails.relativePath = new RelativePath(true, newRelativePath.split('/'))
+            } else {
+              def newRelativePath = packageName + "/" + originalRelativePath
+              fileCopyDetails.relativePath = new RelativePath(true, newRelativePath.split('/'))
+            }
+          } else {
+            exclude fileCopyDetails.name
+          }
+        }
+      }
+    }
+  }
+}
+
+task extractSOFiles {
+  doLast {
+    configurations.extractSO.files.each {
+      def file = it.absoluteFile
+      def packageName = file.name.tokenize('-')[0]
+      copy {
+        from zipTree(file)
+        into "src/main/cpp/lib/$packageName/"
+        include "jni/**/*.so"
+      }
+    }
+  }
+}
+
+def nativeBuildDependsOn(dependsOnTask) {
+  def buildTasks = tasks.findAll({ task -> (
+          !task.name.contains("Clean")
+                  && (task.name.contains("externalNative")
+                  || task.name.contains("CMake")
+                  || task.name.contains("generateJsonModel")
+          )
+  ) })
+  buildTasks.forEach { task -> task.dependsOn(dependsOnTask) }
+}
+
+afterEvaluate {
+  nativeBuildDependsOn(extractAARHeaders)
+  nativeBuildDependsOn(extractSOFiles)
+
+  // Prepare NitroModules headers (flatten from subdirs to single NitroModules/ dir)
+  def nitroModulesDir = file("$projectDir/../node_modules/react-native-nitro-modules")
+  if (!nitroModulesDir.exists()) {
+    // App-level node_modules
+    nitroModulesDir = file("$projectDir/../../react-native-nitro-modules")
+  }
+  if (nitroModulesDir.exists()) {
+    tasks.register('prepareNitroHeaders', Copy) {
+      from(fileTree(new File(nitroModulesDir, 'cpp')).filter { it.isFile() && it.name.endsWith('.hpp') })
+      into "$buildDir/headers/NitroModules"
+      includeEmptyDirs = false
+    }
+    nativeBuildDependsOn(tasks.named('prepareNitroHeaders'))
+  }
+
+  // Ensure NitroModules native build completes before our CMake build
+  def nitroModulesProject = rootProject.findProject(":react-native-nitro-modules")
+  if (nitroModulesProject != null) {
+    def nitroNativeTasks = nitroModulesProject.tasks.findAll { task ->
+      task.name.contains("externalNativeBuild") || task.name.contains("buildCMake")
+    }
+    nitroNativeTasks.each { nitroTask ->
+      nativeBuildDependsOn(nitroTask)
+    }
+  }
+}

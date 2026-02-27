@@ -1,0 +1,19 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": [
+    "nitrotflite"
+  ],
+  "ios": {
+    "iosModuleName": "NitroTflite"
+  },
+  "android": {
+    "androidNamespace": [
+      "nitrotflite"
+    ],
+    "androidCxxLibName": "NitroTflite"
+  },
+  "autolinking": {},
+  "ignorePaths": [
+    "**/node_modules"
+  ]
+}
