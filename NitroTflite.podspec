@@ -6,7 +6,13 @@ enableCoreMLDelegate = false
 if defined?($EnableCoreMLDelegate)
   enableCoreMLDelegate = $EnableCoreMLDelegate
 end
-Pod::UI.puts "[NitroTflite] CoreML Delegate is set to #{enableCoreMLDelegate}! ($EnableCoreMLDelegate setting in Podfile)"
+
+enableMetalDelegate = false
+if defined?($EnableMetalDelegate)
+  enableMetalDelegate = $EnableMetalDelegate
+end
+
+Pod::UI.puts "[NitroTflite] CoreML Delegate: #{enableCoreMLDelegate}  Metal Delegate: #{enableMetalDelegate}"
 
 Pod::Spec.new do |s|
   s.name         = "NitroTflite"
@@ -17,7 +23,7 @@ Pod::Spec.new do |s|
   s.authors      = package["author"]
 
   s.platforms    = { :ios => "13.0" }
-  s.source       = { :git => "https://github.com/user/react-native-nitro-tflite.git", :tag => "#{s.version}" }
+  s.source       = { :git => "https://github.com/dodokw/react-native-nitro-tflite.git", :tag => "#{s.version}" }
 
   s.source_files = [
     # Implementation (Objective-C++)
@@ -30,15 +36,24 @@ Pod::Spec.new do |s|
   load 'nitrogen/generated/ios/NitroTflite+autolinking.rb'
   add_nitrogen_files(s)
 
+  preprocessor_flags = "$(inherited)"
+  preprocessor_flags += " FAST_TFLITE_ENABLE_CORE_ML=#{enableCoreMLDelegate ? 1 : 0}"
+  preprocessor_flags += " FAST_TFLITE_ENABLE_METAL=#{enableMetalDelegate ? 1 : 0}"
+
   s.pod_target_xcconfig = {
-    'GCC_PREPROCESSOR_DEFINITIONS' => "$(inherited) FAST_TFLITE_ENABLE_CORE_ML=#{enableCoreMLDelegate}",
+    'GCC_PREPROCESSOR_DEFINITIONS' => preprocessor_flags,
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20',
   }
 
   # TensorFlow Lite C API
   s.dependency "TensorFlowLiteC", "2.17.0"
-  if enableCoreMLDelegate then
+
+  if enableCoreMLDelegate
     s.dependency "TensorFlowLiteC/CoreML", "2.17.0"
+  end
+
+  if enableMetalDelegate
+    s.dependency "TensorFlowLiteCMetal", "2.17.0"
   end
 
   s.dependency 'React-jsi'

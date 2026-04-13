@@ -18,6 +18,7 @@ import java.util.Objects;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * Utility class for fetching byte data from URLs.
@@ -28,6 +29,13 @@ public class TfliteUrlFetcher {
     private static final String TAG = "NitroTflite";
     private static WeakReference<Context> weakContext;
     private static final OkHttpClient client = new OkHttpClient();
+
+    /** Callback interface for download progress. Called from JNI. */
+    @DoNotStrip
+    public interface ProgressListener {
+        /** @param progress Value in [0.0, 1.0], or -1.0 if content-length is unknown. */
+        void onProgress(double progress);
+    }
 
     public static void setContext(Context context) {
         weakContext = new WeakReference<>(context);
@@ -44,6 +52,11 @@ public class TfliteUrlFetcher {
 
     @DoNotStrip
     public static byte[] fetchByteDataFromUrl(String url) throws Exception {
+        return fetchByteDataFromUrl(url, null);
+    }
+
+    @DoNotStrip
+    public static byte[] fetchByteDataFromUrl(String url, ProgressListener listener) throws Exception {
         Log.i(TAG, "Loading byte data from URL: " + url + "...");
 
         Uri uri = null;
@@ -59,7 +72,7 @@ public class TfliteUrlFetcher {
 
         if (uri != null) {
             if (Objects.equals(uri.getScheme(), "file")) {
-                // It's a file URL
+                // Local file — no meaningful progress, report 100% at end.
                 String path = Objects.requireNonNull(uri.getPath(), "File path cannot be null");
                 File file = new File(path);
 
@@ -72,38 +85,63 @@ public class TfliteUrlFetcher {
                 }
 
                 try (FileInputStream stream = new FileInputStream(file)) {
-                    return getLocalFileBytes(stream, file);
+                    byte[] data = getLocalFileBytes(stream, file);
+                    if (listener != null) listener.onProgress(1.0);
+                    return data;
                 }
             } else {
-                // It's a network URL
+                // Network URL — stream with progress.
                 Request request = new Request.Builder().url(uri.toString()).build();
                 try (Response response = client.newCall(request).execute()) {
-                    if (response.isSuccessful() && response.body() != null) {
-                        return response.body().bytes();
-                    } else {
-                        throw new RuntimeException("Response was not successful!");
+                    if (!response.isSuccessful() || response.body() == null) {
+                        throw new RuntimeException("Response was not successful: " + response.code());
                     }
+                    return streamWithProgress(response.body(), listener);
                 }
             }
         } else if (resourceId != null && resourceId != 0) {
-            // It's bundled into the Android resources
             Context context = weakContext.get();
             if (context == null) {
                 throw new Exception("React Context has already been destroyed!");
             }
             try (InputStream stream = context.getResources().openRawResource(resourceId)) {
                 ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
-                byte[] buffer = new byte[2048];
+                byte[] buffer = new byte[4096];
                 int length;
                 while ((length = stream.read(buffer)) != -1) {
                     byteStream.write(buffer, 0, length);
                 }
+                if (listener != null) listener.onProgress(1.0);
                 return byteStream.toByteArray();
             }
         } else {
             throw new Exception("Input is neither a valid URL, nor a resourceId - " +
                     "cannot load TFLite model! (Input: " + url + ")");
         }
+    }
+
+    /** Stream a ResponseBody while reporting download progress. */
+    private static byte[] streamWithProgress(ResponseBody body, ProgressListener listener)
+            throws IOException {
+        long contentLength = body.contentLength(); // -1 if unknown
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        long downloaded = 0;
+        int read;
+        try (InputStream in = body.byteStream()) {
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+                downloaded += read;
+                if (listener != null) {
+                    double progress = contentLength > 0
+                            ? (double) downloaded / (double) contentLength
+                            : -1.0;
+                    listener.onProgress(Math.min(progress, 1.0));
+                }
+            }
+        }
+        if (listener != null) listener.onProgress(1.0);
+        return out.toByteArray();
     }
 
     private static byte[] getLocalFileBytes(InputStream stream, File file) throws IOException {

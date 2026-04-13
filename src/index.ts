@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Image } from 'react-native'
 import { NitroModules } from 'react-native-nitro-modules'
 import type {
@@ -14,6 +14,13 @@ const factory = NitroModules.createHybridObject<TfliteModelFactory>('TfliteModel
 // In React Native, `require(..)` returns a number.
 type Require = number
 type ModelSource = Require | { url: string }
+
+/**
+ * Callback fired during model loading to report download progress.
+ * - `progress` is in the range [0, 1].
+ * - `progress === -1` means the content-length is unknown (indeterminate).
+ */
+export type ModelLoadProgress = (progress: number) => void
 
 export type TensorflowPlugin =
   | {
@@ -31,42 +38,72 @@ export type TensorflowPlugin =
     }
 
 /**
- * Load a Tensorflow Lite Model from the given `.tflite` asset.
- *
- * * If you are passing in a `.tflite` model from your app's bundle using `require(..)`, make sure to add `tflite` as an asset extension to `metro.config.js`!
- * * If you are passing in a `{ url: ... }`, make sure the URL points directly to a `.tflite` model. This can either be a web URL (`http://..`/`https://..`), or a local file (`file://..`).
- *
- * @param source The `.tflite` model in form of either a `require(..)` statement or a `{ url: string }`.
- * @param delegate The delegate to use for computations. Uses the standard CPU delegate per default. The `core-ml` or `metal` delegates are GPU-accelerated, but don't work on every model.
- * @returns The loaded Model.
+ * Resolve a {@link ModelSource} to a URI string understood by the native layer.
  */
-export function loadTensorflowModel(
-  source: ModelSource,
-  delegate: TensorflowModelDelegate = 'default'
-): Promise<TensorflowModel> {
-  let uri: string
+function resolveSourceUri(source: ModelSource): string {
   if (typeof source === 'number') {
-    const asset = Image.resolveAssetSource(source)
-    uri = asset.uri
-  } else if (typeof source === 'object' && 'url' in source) {
-    uri = source.url
-  } else {
-    throw new Error(
-      'TFLite: Invalid source passed! Source should be either a React Native require(..) or a `{ url: string }` object!'
-    )
+    return Image.resolveAssetSource(source).uri
   }
-  return factory.loadModel(uri, delegate)
+  if (typeof source === 'object' && 'url' in source) {
+    return source.url
+  }
+  throw new Error(
+    'TFLite: Invalid source! Pass either a require(..) number or a { url: string } object.'
+  )
 }
 
 /**
- * Load a Tensorflow Lite Model from the given `.tflite` asset into a React State.
+ * Load a TensorFlow Lite model from the given `.tflite` asset.
  *
- * * If you are passing in a `.tflite` model from your app's bundle using `require(..)`, make sure to add `tflite` as an asset extension to `metro.config.js`!
- * * If you are passing in a `{ url: ... }`, make sure the URL points directly to a `.tflite` model. This can either be a web URL (`http://..`/`https://..`), or a local file (`file://..`).
+ * Results are cached in native memory — calling this function twice with the
+ * same `source` and `delegate` returns the **same underlying model** without
+ * re-loading or re-allocating tensors.
  *
- * @param source The `.tflite` model in form of either a `require(..)` statement or a `{ url: string }`.
- * @param delegate The delegate to use for computations. Uses the standard CPU delegate per default. The `core-ml` or `metal` delegates are GPU-accelerated, but don't work on every model.
- * @returns The state of the Model.
+ * * If you are passing in a `.tflite` model from your app's bundle using `require(..)`,
+ *   make sure to add `tflite` as an asset extension to `metro.config.js`!
+ * * If you are passing in a `{ url: ... }`, the URL can be a web URL (`http://`/`https://`)
+ *   or a local file (`file://`).
+ *
+ * @param source      The model source — either `require('./model.tflite')` or `{ url: '...' }`.
+ * @param delegate    The inference delegate. Defaults to `'default'` (CPU).
+ * @param onProgress  Optional callback reporting download progress in [0, 1].
+ *                    Receives `-1` when `Content-Length` is unknown.
+ * @returns           A promise that resolves to the loaded {@link TensorflowModel}.
+ */
+export function loadTensorflowModel(
+  source: ModelSource,
+  delegate: TensorflowModelDelegate = 'default',
+  onProgress?: ModelLoadProgress
+): Promise<TensorflowModel> {
+  const uri = resolveSourceUri(source)
+  return factory.loadModel(uri, delegate, onProgress)
+}
+
+/**
+ * Eagerly clear the native model cache.
+ *
+ * Cached entries are automatically released when the JS model object is GC'd,
+ * so calling this is optional. Use it to free memory proactively (e.g. when
+ * navigating away from a screen that loaded multiple large models).
+ */
+export function clearTensorflowModelCache(): void {
+  factory.clearCache()
+}
+
+/**
+ * Load a TensorFlow Lite model into React state.
+ *
+ * Results are cached in native memory — changing `source` or `delegate` will
+ * re-load the model, but calling with identical values returns the cached one.
+ *
+ * * If you are passing in a `.tflite` model using `require(..)`, add `tflite`
+ *   as an asset extension in `metro.config.js`.
+ * * If you are passing in a `{ url: ... }`, the URL can be `http://`, `https://`,
+ *   or `file://`.
+ *
+ * @param source    The model source.
+ * @param delegate  The inference delegate. Defaults to `'default'` (CPU).
+ * @returns         The current load state of the model.
  */
 export function useTensorflowModel(
   source: ModelSource,
@@ -77,22 +114,31 @@ export function useTensorflowModel(
     state: 'loading',
   })
 
-  useEffect(() => {
-    const load = async (): Promise<void> => {
-      try {
-        setState({ model: undefined, state: 'loading' })
-        const m = await loadTensorflowModel(source, delegate)
-        setState({ model: m, state: 'loaded' })
-      } catch (e) {
-        console.error(`Failed to load Tensorflow Model!`, e)
-        setState({ model: undefined, state: 'error', error: e as Error })
-      }
+  // Stable dependency key — avoids re-loading when callers inline `{ url }` objects.
+  const sourceKey = typeof source === 'number' ? source : source.url
+
+  // Keep a ref to the latest setState so the async callback never closes over a stale value.
+  const setStateRef = useRef(setState)
+  setStateRef.current = setState
+
+  const load = useCallback(async (): Promise<void> => {
+    setStateRef.current({ model: undefined, state: 'loading' })
+    try {
+      const m = await loadTensorflowModel(source, delegate)
+      setStateRef.current({ model: m, state: 'loaded' })
+    } catch (e) {
+      console.error('Failed to load Tensorflow Model!', e)
+      setStateRef.current({ model: undefined, state: 'error', error: e as Error })
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey, delegate])
+
+  useEffect(() => {
     load()
-  }, [delegate, source])
+  }, [load])
 
   return state
 }
 
 // Re-export types
-export type { TensorflowModel, TensorflowModelDelegate, Tensor }
+export type { TensorflowModel, TensorflowModelDelegate, Tensor, ModelSource }

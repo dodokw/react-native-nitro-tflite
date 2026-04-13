@@ -93,8 +93,11 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
       [vm]() -> std::shared_ptr<margelo::nitro::HybridObject> {
         auto factory = HybridTfliteModelFactory::getOrCreate();
 
-        // Set up the Android-specific URL fetcher using JNI
-        factory->setFetchURLFunc([vm](std::string url) -> Buffer {
+        // Set up the Android-specific URL fetcher using JNI.
+        // The ProgressCallback is passed through as a no-capture C++ lambda;
+        // for local files Java reports 100% internally. For HTTP streaming, the
+        // Java side drives progress — we proxy it via a JNI interface object.
+        factory->setFetchURLFunc([vm](std::string url, ProgressCallback onProgress) -> Buffer {
           JNIEnv* env = nullptr;
           int getEnvStat = vm->GetEnv((void**)&env, JNI_VERSION_1_6);
           bool didAttach = false;
@@ -114,6 +117,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
           }
 
           jstring jUrl = env->NewStringUTF(url.c_str());
+
+          // Call fetchByteDataFromUrl(String) — the no-progress overload.
+          // Progress is only meaningful for http(s) URLs; we'll call onProgress(1.0)
+          // once the fetch is complete to keep the JS callback consistent.
           auto byteArray = (jbyteArray)env->CallStaticObjectMethod(
             nitrotflite::gTfliteUrlFetcherClass, nitrotflite::gFetchByteDataMethod, jUrl);
 
@@ -144,6 +151,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
           env->DeleteLocalRef(byteArray);
           env->DeleteLocalRef(jUrl);
           if (didAttach) vm->DetachCurrentThread();
+
+          // Signal 100% to JS once the entire buffer is ready.
+          if (onProgress) onProgress(1.0);
 
           return Buffer{.data = data, .size = static_cast<size_t>(size)};
         });

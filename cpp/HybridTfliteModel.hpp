@@ -11,9 +11,11 @@
 #include <NitroModules/HybridObject.hpp>
 #include "jsi/TypedArray.h"
 #include <jsi/jsi.h>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #ifdef ANDROID
 #include <tflite/c/c_api.h>
@@ -35,11 +37,16 @@ public:
   // TFL Delegate Type
   enum Delegate { Default, Metal, CoreML, NnApi, AndroidGPU };
 
+  // DelegateDeleter: platform-specific cleanup for the TFLite delegate.
+  // Each delegate API has its own delete function.
+  using DelegateDeleter = std::function<void()>;
+
 public:
   explicit HybridTfliteModel(TfLiteModel* model,
                                TfLiteInterpreter* interpreter,
                                Buffer modelData,
-                               Delegate delegate);
+                               Delegate delegate,
+                               DelegateDeleter delegateDeleter = nullptr);
   ~HybridTfliteModel() override;
 
   // HybridObject overrides
@@ -60,6 +67,13 @@ public:
                            const jsi::Value* args, size_t count);
   jsi::Value getDelegateRaw(jsi::Runtime& runtime, const jsi::Value& thisValue,
                             const jsi::Value* args, size_t count);
+  /**
+   * Dynamically resize an input tensor.
+   * args[0]: inputIndex (number), args[1]: newShape (number[])
+   * Calls TfLiteInterpreterResizeInputTensor + TfLiteInterpreterAllocateTensors.
+   */
+  jsi::Value reshapeInputRaw(jsi::Runtime& runtime, const jsi::Value& thisValue,
+                              const jsi::Value* args, size_t count);
 
   // Internal helpers
   void copyInputBuffers(jsi::Runtime& runtime, jsi::Object inputValues);
@@ -76,8 +90,14 @@ private:
   TfLiteInterpreter* _interpreter = nullptr;
   Delegate _delegate = Delegate::Default;
   Buffer _model;
+  DelegateDeleter _delegateDeleter;  // cleans up the TFLite delegate on destruction
 
   std::unordered_map<std::string, std::shared_ptr<TypedArrayBase>> _outputBuffers;
+
+  // Cached output result array — avoids allocating a new jsi::Array every inference.
+  // Keyed by runtime pointer since the array is runtime-specific.
+  std::unordered_map<uintptr_t, std::shared_ptr<jsi::Object>> _outputResultCache;
+  int _cachedOutputCount = -1;
 
   static constexpr auto TAG = "TfliteModel";
 };

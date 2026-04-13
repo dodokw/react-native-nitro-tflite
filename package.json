@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-tflite",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "High-performance TensorFlow Lite library for React Native, powered by Nitro Modules",
   "main": "lib/index",
   "module": "lib/index",
@@ -26,7 +26,8 @@
     "app.plugin.js",
     "nitro.json",
     "*.podspec",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
