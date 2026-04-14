@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] — 2026-04-14
+
+### Fixed
+
+- **Metal Delegate pod not found**: Fixed incorrect CocoaPods dependency name
+  `TensorFlowLiteCMetal` → `TensorFlowLiteC/Metal`. The Metal delegate is a
+  subspec of `TensorFlowLiteC`, not a separate pod. ([#1])
+- **Build error with Metal/CoreML delegate enabled**: `.cpp` files failed to
+  compile when including TFLite delegate headers that use `#import <Metal/Metal.h>`
+  (Objective-C). Added `GCC_INPUT_FILETYPE = sourcecode.cpp.objcpp` to the
+  podspec when Metal or CoreML delegates are enabled, forcing Xcode to compile
+  all source files as Objective-C++.
+- **`nil` in C++ source**: Replaced Objective-C `nil` literal with C++ `nullptr`
+  in `TFLGpuDelegateCreate()` call.
+
+---
+
 ## [0.1.0] — 2026-04-13
 
 ### Added
@@ -32,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inference to the GPU via Apple's Metal API. ([#metal])
   - Enable the TFLite Metal pod by adding `$EnableMetalDelegate = true` in your
     `Podfile` before `use_frameworks!`, then run `pod install`.
-  - Requires `TensorFlowLiteCMetal` pod (automatically added when the flag is set).
+  - Requires `TensorFlowLiteC/Metal` subspec (automatically added when the flag is set).
 
 - **Dynamic input shape** — New `model.reshapeInput(inputIndex, shape)` method
   for models that support dynamic tensor shapes. ([#reshape])

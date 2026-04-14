@@ -40,10 +40,18 @@ Pod::Spec.new do |s|
   preprocessor_flags += " FAST_TFLITE_ENABLE_CORE_ML=#{enableCoreMLDelegate ? 1 : 0}"
   preprocessor_flags += " FAST_TFLITE_ENABLE_METAL=#{enableMetalDelegate ? 1 : 0}"
 
-  s.pod_target_xcconfig = {
+  xcconfig = {
     'GCC_PREPROCESSOR_DEFINITIONS' => preprocessor_flags,
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20',
   }
+
+  # Metal/CoreML delegate headers use #import <Metal/Metal.h> (Objective-C).
+  # Force all .cpp files to compile as Objective-C++ so they can include these headers.
+  if enableMetalDelegate || enableCoreMLDelegate
+    xcconfig['GCC_INPUT_FILETYPE'] = 'sourcecode.cpp.objcpp'
+  end
+
+  s.pod_target_xcconfig = xcconfig
 
   # TensorFlow Lite C API
   s.dependency "TensorFlowLiteC", "2.17.0"
@@ -53,7 +61,7 @@ Pod::Spec.new do |s|
   end
 
   if enableMetalDelegate
-    s.dependency "TensorFlowLiteCMetal", "2.17.0"
+    s.dependency "TensorFlowLiteC/Metal", "2.17.0"
   end
 
   s.dependency 'React-jsi'

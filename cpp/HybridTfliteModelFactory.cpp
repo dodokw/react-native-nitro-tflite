@@ -239,7 +239,7 @@ jsi::Value HybridTfliteModelFactory::loadModelRaw(jsi::Runtime& runtime,
               }
               case HybridTfliteModel::Delegate::Metal: {
 #if FAST_TFLITE_ENABLE_METAL
-                auto metalDelegate = TFLGpuDelegateCreate(nil);
+                auto metalDelegate = TFLGpuDelegateCreate(nullptr);
                 TfLiteInterpreterOptionsAddDelegate(options, metalDelegate);
                 delegateDeleter = [metalDelegate]() { TFLGpuDelegateDelete(metalDelegate); };
                 break;
